@@ -5,3 +5,141 @@ generator client {
 datasource db {
   provider = "mysql"
 }
+
+enum UserRole {
+  ORGANIZER
+  CHECKIN_STAFF
+}
+
+enum RegistrationStatus {
+  RESERVED
+  CONFIRMED
+  CHECKED_IN
+  CANCELLED
+  EXPIRED
+}
+
+enum AlertType {
+  AT_CAPACITY
+}
+
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      UserRole
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  staffAssignments    StaffAssignment[]
+  historyEntries      RegistrationHistory[]
+}
+
+model Event {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  startDate   DateTime?
+  endDate     DateTime?
+  archivedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sessions Session[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  eventId   String
+  title     String
+  startTime DateTime
+  duration  Int
+  location  String
+  capacity  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  event          Event              @relation(fields: [eventId], references: [id])
+  registrations  Registration[]
+  staffAssignments StaffAssignment[]
+  alerts         Alert[]
+
+  @@index([eventId])
+  @@index([startTime])
+}
+
+model Registration {
+  id          String   @id @default(cuid())
+  sessionId   String
+  name        String
+  email       String
+  phone       String?
+  status      RegistrationStatus
+  reservedAt  DateTime @default(now())
+  expiresAt   DateTime?
+  confirmedAt DateTime?
+  checkedInAt DateTime?
+  cancelledAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  session Session @relation(fields: [sessionId], references: [id])
+  history RegistrationHistory[]
+
+  @@index([sessionId])
+  @@index([status])
+  @@index([email])
+  @@index([reservedAt])
+}
+
+
+model StaffAssignment {
+  id        String   @id @default(cuid())
+  sessionId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@unique([sessionId, userId])
+
+  @@index([userId])
+}
+
+
+model RegistrationHistory {
+  id             String   @id @default(cuid())
+  registrationId String
+  actorId        String?
+  action         String
+  oldStatus      String?
+  newStatus      String?
+  note           String?
+  createdAt      DateTime @default(now())
+
+  registration Registration @relation(fields: [registrationId], references: [id])
+  actor        User?        @relation(fields: [actorId], references: [id])
+
+  @@index([registrationId])
+  @@index([actorId])
+  @@index([createdAt])
+}
+
+
+model Alert {
+  id          String    @id @default(cuid())
+  sessionId   String
+  type        AlertType
+  message     String
+  dismissed   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  dismissedAt DateTime?
+
+  session Session @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@index([dismissed])
+}
