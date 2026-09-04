@@ -23,7 +23,7 @@ if (!process.env.JWT_SECRET) {
 // Prisma + MySQL connection
 // ========================================
 const adapter = new PrismaMariaDb({
-  host: "localhost",
+  host: "127.0.0.1",
   port: 3306,
   user: "root",
   password: process.env.DB_PASSWORD,
@@ -45,12 +45,38 @@ app.use(cors());
 app.use(express.json());
 
 // ========================================
+// Helper: validate date
+// ========================================
+function parseValidDate(value) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date;
+}
+
+// ========================================
+// Helper: validate positive integer
+// ========================================
+function isPositiveInteger(value) {
+  return (
+    Number.isInteger(value) &&
+    value > 0
+  );
+}
+
+// ========================================
 // Authentication middleware
 // ========================================
 async function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
 
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  if (
+    !authHeader ||
+    !authHeader.startsWith("Bearer ")
+  ) {
     return res.status(401).json({
       success: false,
       message: "Authentication required.",
@@ -66,7 +92,7 @@ async function authenticateToken(req, res, next) {
     );
 
     // ----------------------------------------
-    // Verify that the user still exists
+    // Verify user still exists
     // ----------------------------------------
     const user = await prisma.user.findUnique({
       where: {
@@ -83,22 +109,25 @@ async function authenticateToken(req, res, next) {
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: "User account no longer exists.",
+        message:
+          "User account no longer exists.",
       });
     }
 
-    // ----------------------------------------
     // Use current database role
-    // ----------------------------------------
     req.user = user;
 
     next();
   } catch (error) {
-    console.error("Authentication failed:", error.message);
+    console.error(
+      "Authentication failed:",
+      error.message
+    );
 
     return res.status(401).json({
       success: false,
-      message: "Invalid or expired authentication token.",
+      message:
+        "Invalid or expired authentication token.",
     });
   }
 }
@@ -115,10 +144,13 @@ function requireRole(...allowedRoles) {
       });
     }
 
-    if (!allowedRoles.includes(req.user.role)) {
+    if (
+      !allowedRoles.includes(req.user.role)
+    ) {
       return res.status(403).json({
         success: false,
-        message: "You do not have permission to perform this action.",
+        message:
+          "You do not have permission to perform this action.",
         requiredRoles: allowedRoles,
         currentRole: req.user.role,
       });
@@ -133,7 +165,8 @@ function requireRole(...allowedRoles) {
 // ========================================
 app.get("/", (req, res) => {
   res.json({
-    message: "Event Registration API is running 🚀",
+    message:
+      "Event Registration API is running 🚀",
   });
 });
 
@@ -152,7 +185,8 @@ app.get("/api/health", (req, res) => {
 // ========================================
 app.get("/api/db-test", async (req, res) => {
   try {
-    const userCount = await prisma.user.count();
+    const userCount =
+      await prisma.user.count();
 
     res.json({
       success: true,
@@ -160,7 +194,10 @@ app.get("/api/db-test", async (req, res) => {
       userCount,
     });
   } catch (error) {
-    console.error("Database test failed:", error);
+    console.error(
+      "Database test failed:",
+      error
+    );
 
     res.status(500).json({
       success: false,
@@ -173,211 +210,245 @@ app.get("/api/db-test", async (req, res) => {
 // ========================================
 // AUTH - Register
 // ========================================
-app.post("/api/auth/register", async (req, res) => {
-  try {
-    const { name, email, password, role } = req.body;
-
-    if (!name || !email || !password || !role) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Name, email, password and role are required.",
-      });
-    }
-
-    if (
-      typeof name !== "string" ||
-      name.trim().length < 2
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Name must contain at least 2 characters.",
-      });
-    }
-
-    if (
-      typeof email !== "string" ||
-      email.trim() === ""
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Valid email is required.",
-      });
-    }
-
-    const normalizedEmail = email.trim().toLowerCase();
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-    if (!emailRegex.test(normalizedEmail)) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Please provide a valid email address.",
-      });
-    }
-
-    if (
-      typeof password !== "string" ||
-      password.length < 8
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Password must contain at least 8 characters.",
-      });
-    }
-
-    const allowedRoles = [
-      "ORGANIZER",
-      "CHECKIN_STAFF",
-    ];
-
-    if (!allowedRoles.includes(role)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid role.",
-        allowedRoles,
-      });
-    }
-
-    const existingUser = await prisma.user.findUnique({
-      where: {
-        email: normalizedEmail,
-      },
-    });
-
-    if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        message:
-          "An account with this email already exists.",
-      });
-    }
-
-    const hashedPassword = await bcrypt.hash(
-      password,
-      12
-    );
-
-    const user = await prisma.user.create({
-      data: {
-        name: name.trim(),
-        email: normalizedEmail,
-        password: hashedPassword,
+app.post(
+  "/api/auth/register",
+  async (req, res) => {
+    try {
+      const {
+        name,
+        email,
+        password,
         role,
-      },
-    });
+      } = req.body;
 
-    res.status(201).json({
-      success: true,
-      message: "Account created successfully.",
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        createdAt: user.createdAt,
-      },
-    });
-  } catch (error) {
-    console.error("Registration failed:", error);
+      if (
+        !name ||
+        !email ||
+        !password ||
+        !role
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Name, email, password and role are required.",
+        });
+      }
 
-    res.status(500).json({
-      success: false,
-      message: "Failed to create account.",
-    });
+      if (
+        typeof name !== "string" ||
+        name.trim().length < 2
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Name must contain at least 2 characters.",
+        });
+      }
+
+      if (
+        typeof email !== "string" ||
+        email.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid email is required.",
+        });
+      }
+
+      const normalizedEmail =
+        email.trim().toLowerCase();
+
+      const emailRegex =
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+      if (!emailRegex.test(normalizedEmail)) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Please provide a valid email address.",
+        });
+      }
+
+      if (
+        typeof password !== "string" ||
+        password.length < 8
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Password must contain at least 8 characters.",
+        });
+      }
+
+      const allowedRoles = [
+        "ORGANIZER",
+        "CHECKIN_STAFF",
+      ];
+
+      if (!allowedRoles.includes(role)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid role.",
+          allowedRoles,
+        });
+      }
+
+      const existingUser =
+        await prisma.user.findUnique({
+          where: {
+            email: normalizedEmail,
+          },
+        });
+
+      if (existingUser) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "An account with this email already exists.",
+        });
+      }
+
+      const hashedPassword =
+        await bcrypt.hash(password, 12);
+
+      const user =
+        await prisma.user.create({
+          data: {
+            name: name.trim(),
+            email: normalizedEmail,
+            password: hashedPassword,
+            role,
+          },
+        });
+
+      res.status(201).json({
+        success: true,
+        message:
+          "Account created successfully.",
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          createdAt: user.createdAt,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Registration failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to create account.",
+      });
+    }
   }
-});
+);
 
 // ========================================
 // AUTH - Login
 // ========================================
-app.post("/api/auth/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
+app.post(
+  "/api/auth/login",
+  async (req, res) => {
+    try {
+      const {
+        email,
+        password,
+      } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Email and password are required.",
-      });
-    }
-
-    if (
-      typeof email !== "string" ||
-      typeof password !== "string"
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Email and password must be valid strings.",
-      });
-    }
-
-    const normalizedEmail = email
-      .trim()
-      .toLowerCase();
-
-    const user = await prisma.user.findUnique({
-      where: {
-        email: normalizedEmail,
-      },
-    });
-
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid email or password.",
-      });
-    }
-
-    const passwordMatches = await bcrypt.compare(
-      password,
-      user.password
-    );
-
-    if (!passwordMatches) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid email or password.",
-      });
-    }
-
-    const token = jwt.sign(
-      {
-        userId: user.id,
-        email: user.email,
-        role: user.role,
-      },
-      process.env.JWT_SECRET,
-      {
-        expiresIn: "8h",
+      if (!email || !password) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Email and password are required.",
+        });
       }
-    );
 
-    res.json({
-      success: true,
-      message: "Login successful.",
-      token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
-    });
-  } catch (error) {
-    console.error("Login failed:", error);
+      if (
+        typeof email !== "string" ||
+        typeof password !== "string"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Email and password must be valid strings.",
+        });
+      }
 
-    res.status(500).json({
-      success: false,
-      message: "Failed to login.",
-    });
+      const normalizedEmail =
+        email.trim().toLowerCase();
+
+      const user =
+        await prisma.user.findUnique({
+          where: {
+            email: normalizedEmail,
+          },
+        });
+
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          message:
+            "Invalid email or password.",
+        });
+      }
+
+      const passwordMatches =
+        await bcrypt.compare(
+          password,
+          user.password
+        );
+
+      if (!passwordMatches) {
+        return res.status(401).json({
+          success: false,
+          message:
+            "Invalid email or password.",
+        });
+      }
+
+      const token = jwt.sign(
+        {
+          userId: user.id,
+          email: user.email,
+          role: user.role,
+        },
+        process.env.JWT_SECRET,
+        {
+          expiresIn: "8h",
+        }
+      );
+
+      res.json({
+        success: true,
+        message: "Login successful.",
+        token,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Login failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to login.",
+      });
+    }
   }
-});
+);
 
 // ========================================
 // AUTH - Current user
@@ -410,7 +481,7 @@ app.get(
 );
 
 // ========================================
-// RBAC - Organizer only test endpoint
+// RBAC - Organizer only test
 // ========================================
 app.get(
   "/api/auth/organizer-test",
@@ -427,7 +498,7 @@ app.get(
 );
 
 // ========================================
-// RBAC - Check-in staff only test endpoint
+// RBAC - Check-in staff only test
 // ========================================
 app.get(
   "/api/auth/staff-test",
@@ -444,57 +515,1614 @@ app.get(
 );
 
 // ========================================
-// Create test session
-// DEVELOPMENT ONLY
+// EVENT MANAGEMENT
 // ========================================
-app.post("/api/test-session", async (req, res) => {
-  try {
-    const event = await prisma.event.create({
-      data: {
-        name: "Test Event",
-        description: "Development test event",
-      },
-    });
 
-    const session = await prisma.session.create({
-      data: {
-        eventId: event.id,
-        title: "Test Session",
-        startTime: new Date(
-          "2026-09-20T10:00:00"
-        ),
-        duration: 60,
-        location: "Bhopal",
-        capacity: 2,
-      },
-    });
+// ----------------------------------------
+// Create event
+// ORGANIZER ONLY
+// ----------------------------------------
+app.post(
+  "/api/events",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      const {
+        name,
+        description,
+        startDate,
+        endDate,
+      } = req.body;
 
-    res.status(201).json({
-      success: true,
-      message: "Test session created.",
-      event: {
-        id: event.id,
-        name: event.name,
-      },
-      session: {
-        id: session.id,
-        title: session.title,
-        capacity: session.capacity,
-      },
-    });
-  } catch (error) {
-    console.error(
-      "Test session creation failed:",
-      error
-    );
+      // --------------------------------------
+      // Validate name
+      // --------------------------------------
+      if (
+        typeof name !== "string" ||
+        name.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Event name is required.",
+        });
+      }
 
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to create test session.",
-    });
+      if (name.trim().length > 200) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Event name cannot exceed 200 characters.",
+        });
+      }
+
+      // --------------------------------------
+      // Validate description
+      // --------------------------------------
+      if (
+        description !== undefined &&
+        description !== null &&
+        typeof description !== "string"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Description must be a string.",
+        });
+      }
+
+      // --------------------------------------
+      // Validate dates
+      // --------------------------------------
+      let parsedStartDate = null;
+      let parsedEndDate = null;
+
+      if (
+        startDate !== undefined &&
+        startDate !== null &&
+        startDate !== ""
+      ) {
+        parsedStartDate =
+          parseValidDate(startDate);
+
+        if (!parsedStartDate) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Invalid start date.",
+          });
+        }
+      }
+
+      if (
+        endDate !== undefined &&
+        endDate !== null &&
+        endDate !== ""
+      ) {
+        parsedEndDate =
+          parseValidDate(endDate);
+
+        if (!parsedEndDate) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Invalid end date.",
+          });
+        }
+      }
+
+      if (
+        parsedStartDate &&
+        parsedEndDate &&
+        parsedEndDate < parsedStartDate
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "End date cannot be earlier than start date.",
+        });
+      }
+
+      const event =
+        await prisma.event.create({
+          data: {
+            name: name.trim(),
+            description:
+              typeof description === "string" &&
+              description.trim() !== ""
+                ? description.trim()
+                : null,
+            startDate: parsedStartDate,
+            endDate: parsedEndDate,
+          },
+          include: {
+            _count: {
+              select: {
+                sessions: true,
+              },
+            },
+          },
+        });
+
+      res.status(201).json({
+        success: true,
+        message:
+          "Event created successfully.",
+        event: {
+          id: event.id,
+          name: event.name,
+          description: event.description,
+          startDate: event.startDate,
+          endDate: event.endDate,
+          archivedAt: event.archivedAt,
+          createdAt: event.createdAt,
+          updatedAt: event.updatedAt,
+          sessionCount:
+            event._count.sessions,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Event creation failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to create event.",
+      });
+    }
   }
-});
+);
+
+// ----------------------------------------
+// List events
+// Active events are public.
+// Organizers may use ?includeArchived=true
+// ----------------------------------------
+app.get(
+  "/api/events",
+  async (req, res) => {
+    try {
+      const includeArchived =
+        req.query.includeArchived ===
+        "true";
+
+      // Only authenticated organizers
+      // can request archived events.
+      if (includeArchived) {
+        const authHeader =
+          req.headers.authorization;
+
+        if (
+          !authHeader ||
+          !authHeader.startsWith(
+            "Bearer "
+          )
+        ) {
+          return res.status(401).json({
+            success: false,
+            message:
+              "Authentication required to view archived events.",
+          });
+        }
+
+        const token =
+          authHeader.substring(7);
+
+        try {
+          const decoded = jwt.verify(
+            token,
+            process.env.JWT_SECRET
+          );
+
+          const user =
+            await prisma.user.findUnique({
+              where: {
+                id: decoded.userId,
+              },
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                role: true,
+              },
+            });
+
+          if (!user) {
+            return res.status(401).json({
+              success: false,
+              message:
+                "User account no longer exists.",
+            });
+          }
+
+          if (user.role !== "ORGANIZER") {
+            return res.status(403).json({
+              success: false,
+              message:
+                "Only organizers can view archived events.",
+            });
+          }
+        } catch (error) {
+          return res.status(401).json({
+            success: false,
+            message:
+              "Invalid or expired authentication token.",
+          });
+        }
+      }
+
+      const events =
+        await prisma.event.findMany({
+          where: includeArchived
+            ? {}
+            : {
+                archivedAt: null,
+              },
+          orderBy: {
+            startDate: "asc",
+          },
+          include: {
+            _count: {
+              select: {
+                sessions: true,
+              },
+            },
+          },
+        });
+
+      res.json({
+        success: true,
+        count: events.length,
+        events: events.map((event) => ({
+          id: event.id,
+          name: event.name,
+          description: event.description,
+          startDate: event.startDate,
+          endDate: event.endDate,
+          archivedAt: event.archivedAt,
+          createdAt: event.createdAt,
+          updatedAt: event.updatedAt,
+          sessionCount:
+            event._count.sessions,
+        })),
+      });
+    } catch (error) {
+      console.error(
+        "Event list failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to fetch events.",
+      });
+    }
+  }
+);
+
+// ----------------------------------------
+// Get event details
+// Active events are public.
+// Archived event requires organizer.
+// ----------------------------------------
+app.get(
+  "/api/events/:eventId",
+  async (req, res) => {
+    try {
+      const {
+        eventId,
+      } = req.params;
+
+      if (
+        !eventId ||
+        eventId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid event ID is required.",
+        });
+      }
+
+      const event =
+        await prisma.event.findUnique({
+          where: {
+            id: eventId.trim(),
+          },
+          include: {
+            sessions: {
+              orderBy: {
+                startTime: "asc",
+              },
+              include: {
+                _count: {
+                  select: {
+                    registrations: true,
+                    staffAssignments: true,
+                  },
+                },
+              },
+            },
+          },
+        });
+
+      if (!event) {
+        return res.status(404).json({
+          success: false,
+          message: "Event not found.",
+        });
+      }
+
+      // Archived events are hidden
+      // from unauthenticated/public users.
+      if (event.archivedAt) {
+        const authHeader =
+          req.headers.authorization;
+
+        if (
+          !authHeader ||
+          !authHeader.startsWith(
+            "Bearer "
+          )
+        ) {
+          return res.status(404).json({
+            success: false,
+            message: "Event not found.",
+          });
+        }
+
+        const token =
+          authHeader.substring(7);
+
+        try {
+          const decoded = jwt.verify(
+            token,
+            process.env.JWT_SECRET
+          );
+
+          const user =
+            await prisma.user.findUnique({
+              where: {
+                id: decoded.userId,
+              },
+              select: {
+                id: true,
+                role: true,
+              },
+            });
+
+          if (
+            !user ||
+            user.role !== "ORGANIZER"
+          ) {
+            return res.status(404).json({
+              success: false,
+              message: "Event not found.",
+            });
+          }
+        } catch (error) {
+          return res.status(404).json({
+            success: false,
+            message: "Event not found.",
+          });
+        }
+      }
+
+      res.json({
+        success: true,
+        event: {
+          id: event.id,
+          name: event.name,
+          description: event.description,
+          startDate: event.startDate,
+          endDate: event.endDate,
+          archivedAt: event.archivedAt,
+          createdAt: event.createdAt,
+          updatedAt: event.updatedAt,
+          sessions:
+            event.sessions.map(
+              (session) => ({
+                id: session.id,
+                title: session.title,
+                startTime:
+                  session.startTime,
+                duration:
+                  session.duration,
+                location:
+                  session.location,
+                capacity:
+                  session.capacity,
+                createdAt:
+                  session.createdAt,
+                updatedAt:
+                  session.updatedAt,
+                registrationCount:
+                  session._count
+                    .registrations,
+                staffCount:
+                  session._count
+                    .staffAssignments,
+              })
+            ),
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Event details failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to fetch event.",
+      });
+    }
+  }
+);
+
+// ----------------------------------------
+// Update event
+// ORGANIZER ONLY
+// ----------------------------------------
+app.patch(
+  "/api/events/:eventId",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      const {
+        eventId,
+      } = req.params;
+
+      const {
+        name,
+        description,
+        startDate,
+        endDate,
+      } = req.body;
+
+      if (
+        !eventId ||
+        eventId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid event ID is required.",
+        });
+      }
+
+      const existingEvent =
+        await prisma.event.findUnique({
+          where: {
+            id: eventId.trim(),
+          },
+        });
+
+      if (!existingEvent) {
+        return res.status(404).json({
+          success: false,
+          message: "Event not found.",
+        });
+      }
+
+      if (existingEvent.archivedAt) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Archived events cannot be edited. Restore the event first.",
+        });
+      }
+
+      const data = {};
+
+      if (name !== undefined) {
+        if (
+          typeof name !== "string" ||
+          name.trim() === ""
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Event name must be a non-empty string.",
+          });
+        }
+
+        if (name.trim().length > 200) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Event name cannot exceed 200 characters.",
+          });
+        }
+
+        data.name = name.trim();
+      }
+
+      if (description !== undefined) {
+        if (
+          description !== null &&
+          typeof description !== "string"
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Description must be a string or null.",
+          });
+        }
+
+        data.description =
+          typeof description === "string" &&
+          description.trim() !== ""
+            ? description.trim()
+            : null;
+      }
+
+      let newStartDate =
+        existingEvent.startDate;
+      let newEndDate =
+        existingEvent.endDate;
+
+      if (startDate !== undefined) {
+        if (
+          startDate === null ||
+          startDate === ""
+        ) {
+          newStartDate = null;
+        } else {
+          newStartDate =
+            parseValidDate(startDate);
+
+          if (!newStartDate) {
+            return res.status(400).json({
+              success: false,
+              message:
+                "Invalid start date.",
+            });
+          }
+        }
+
+        data.startDate = newStartDate;
+      }
+
+      if (endDate !== undefined) {
+        if (
+          endDate === null ||
+          endDate === ""
+        ) {
+          newEndDate = null;
+        } else {
+          newEndDate =
+            parseValidDate(endDate);
+
+          if (!newEndDate) {
+            return res.status(400).json({
+              success: false,
+              message:
+                "Invalid end date.",
+            });
+          }
+        }
+
+        data.endDate = newEndDate;
+      }
+
+      if (
+        newStartDate &&
+        newEndDate &&
+        newEndDate < newStartDate
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "End date cannot be earlier than start date.",
+        });
+      }
+
+      const event =
+        await prisma.event.update({
+          where: {
+            id: existingEvent.id,
+          },
+          data,
+          include: {
+            _count: {
+              select: {
+                sessions: true,
+              },
+            },
+          },
+        });
+
+      res.json({
+        success: true,
+        message:
+          "Event updated successfully.",
+        event: {
+          id: event.id,
+          name: event.name,
+          description: event.description,
+          startDate: event.startDate,
+          endDate: event.endDate,
+          archivedAt: event.archivedAt,
+          createdAt: event.createdAt,
+          updatedAt: event.updatedAt,
+          sessionCount:
+            event._count.sessions,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Event update failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to update event.",
+      });
+    }
+  }
+);
+
+// ----------------------------------------
+// Archive event
+// ORGANIZER ONLY
+// ----------------------------------------
+app.post(
+  "/api/events/:eventId/archive",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      const {
+        eventId,
+      } = req.params;
+
+      if (
+        !eventId ||
+        eventId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid event ID is required.",
+        });
+      }
+
+      const event =
+        await prisma.event.findUnique({
+          where: {
+            id: eventId.trim(),
+          },
+        });
+
+      if (!event) {
+        return res.status(404).json({
+          success: false,
+          message: "Event not found.",
+        });
+      }
+
+      if (event.archivedAt) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Event is already archived.",
+        });
+      }
+
+      const archivedEvent =
+        await prisma.event.update({
+          where: {
+            id: event.id,
+          },
+          data: {
+            archivedAt: new Date(),
+          },
+        });
+
+      res.json({
+        success: true,
+        message:
+          "Event archived successfully.",
+        event: {
+          id: archivedEvent.id,
+          name: archivedEvent.name,
+          archivedAt:
+            archivedEvent.archivedAt,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Event archive failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to archive event.",
+      });
+    }
+  }
+);
+
+// ----------------------------------------
+// Restore event
+// ORGANIZER ONLY
+// ----------------------------------------
+app.post(
+  "/api/events/:eventId/restore",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      const {
+        eventId,
+      } = req.params;
+
+      if (
+        !eventId ||
+        eventId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid event ID is required.",
+        });
+      }
+
+      const event =
+        await prisma.event.findUnique({
+          where: {
+            id: eventId.trim(),
+          },
+        });
+
+      if (!event) {
+        return res.status(404).json({
+          success: false,
+          message: "Event not found.",
+        });
+      }
+
+      if (!event.archivedAt) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Event is not archived.",
+        });
+      }
+
+      const restoredEvent =
+        await prisma.event.update({
+          where: {
+            id: event.id,
+          },
+          data: {
+            archivedAt: null,
+          },
+        });
+
+      res.json({
+        success: true,
+        message:
+          "Event restored successfully.",
+        event: {
+          id: restoredEvent.id,
+          name: restoredEvent.name,
+          archivedAt:
+            restoredEvent.archivedAt,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Event restore failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to restore event.",
+      });
+    }
+  }
+);
+
+// ========================================
+// SESSION MANAGEMENT
+// ========================================
+
+// ----------------------------------------
+// Create session
+// ORGANIZER ONLY
+// ----------------------------------------
+app.post(
+  "/api/events/:eventId/sessions",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      const {
+        eventId,
+      } = req.params;
+
+      const {
+        title,
+        startTime,
+        duration,
+        location,
+        capacity,
+      } = req.body;
+
+      if (
+        !eventId ||
+        eventId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid event ID is required.",
+        });
+      }
+
+      if (
+        typeof title !== "string" ||
+        title.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Session title is required.",
+        });
+      }
+
+      if (
+        typeof startTime !== "string" ||
+        startTime.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Session start time is required.",
+        });
+      }
+
+      const parsedStartTime =
+        parseValidDate(startTime);
+
+      if (!parsedStartTime) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid session start time.",
+        });
+      }
+
+      if (
+        !isPositiveInteger(duration)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Duration must be a positive integer in minutes.",
+        });
+      }
+
+      if (
+        typeof location !== "string" ||
+        location.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Session location is required.",
+        });
+      }
+
+      if (
+        !isPositiveInteger(capacity)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Capacity must be a positive integer.",
+        });
+      }
+
+      const event =
+        await prisma.event.findUnique({
+          where: {
+            id: eventId.trim(),
+          },
+        });
+
+      if (!event) {
+        return res.status(404).json({
+          success: false,
+          message: "Event not found.",
+        });
+      }
+
+      if (event.archivedAt) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Cannot add a session to an archived event.",
+        });
+      }
+
+      // --------------------------------------
+      // Session must fit within event dates
+      // when event dates are defined.
+      // --------------------------------------
+      if (
+        event.startDate &&
+        parsedStartTime < event.startDate
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Session start time cannot be before the event start date.",
+        });
+      }
+
+      if (
+        event.endDate &&
+        parsedStartTime > event.endDate
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Session start time cannot be after the event end date.",
+        });
+      }
+
+      const session =
+        await prisma.session.create({
+          data: {
+            eventId: event.id,
+            title: title.trim(),
+            startTime: parsedStartTime,
+            duration,
+            location: location.trim(),
+            capacity,
+          },
+        });
+
+      res.status(201).json({
+        success: true,
+        message:
+          "Session created successfully.",
+        session,
+      });
+    } catch (error) {
+      console.error(
+        "Session creation failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to create session.",
+      });
+    }
+  }
+);
+
+// ----------------------------------------
+// List sessions for event
+// ----------------------------------------
+app.get(
+  "/api/events/:eventId/sessions",
+  async (req, res) => {
+    try {
+      const {
+        eventId,
+      } = req.params;
+
+      if (
+        !eventId ||
+        eventId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid event ID is required.",
+        });
+      }
+
+      const event =
+        await prisma.event.findUnique({
+          where: {
+            id: eventId.trim(),
+          },
+        });
+
+      if (!event) {
+        return res.status(404).json({
+          success: false,
+          message: "Event not found.",
+        });
+      }
+
+      if (event.archivedAt) {
+        return res.status(404).json({
+          success: false,
+          message: "Event not found.",
+        });
+      }
+
+      const sessions =
+        await prisma.session.findMany({
+          where: {
+            eventId: event.id,
+          },
+          orderBy: {
+            startTime: "asc",
+          },
+          include: {
+            _count: {
+              select: {
+                registrations: true,
+                staffAssignments: true,
+              },
+            },
+          },
+        });
+
+      res.json({
+        success: true,
+        event: {
+          id: event.id,
+          name: event.name,
+        },
+        count: sessions.length,
+        sessions:
+          sessions.map((session) => ({
+            id: session.id,
+            title: session.title,
+            startTime:
+              session.startTime,
+            duration:
+              session.duration,
+            location:
+              session.location,
+            capacity:
+              session.capacity,
+            createdAt:
+              session.createdAt,
+            updatedAt:
+              session.updatedAt,
+            registrationCount:
+              session._count
+                .registrations,
+            staffCount:
+              session._count
+                .staffAssignments,
+          })),
+      });
+    } catch (error) {
+      console.error(
+        "Session list failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to fetch sessions.",
+      });
+    }
+  }
+);
+
+// ----------------------------------------
+// Get session details
+// ----------------------------------------
+app.get(
+  "/api/sessions/:sessionId",
+  async (req, res) => {
+    try {
+      const {
+        sessionId,
+      } = req.params;
+
+      if (
+        !sessionId ||
+        sessionId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid session ID is required.",
+        });
+      }
+
+      const session =
+        await prisma.session.findUnique({
+          where: {
+            id: sessionId.trim(),
+          },
+          include: {
+            event: true,
+            _count: {
+              select: {
+                registrations: true,
+                staffAssignments: true,
+              },
+            },
+          },
+        });
+
+      if (!session) {
+        return res.status(404).json({
+          success: false,
+          message: "Session not found.",
+        });
+      }
+
+      if (session.event.archivedAt) {
+        return res.status(404).json({
+          success: false,
+          message: "Session not found.",
+        });
+      }
+
+      res.json({
+        success: true,
+        session: {
+          id: session.id,
+          title: session.title,
+          startTime:
+            session.startTime,
+          duration:
+            session.duration,
+          location:
+            session.location,
+          capacity:
+            session.capacity,
+          createdAt:
+            session.createdAt,
+          updatedAt:
+            session.updatedAt,
+          event: {
+            id: session.event.id,
+            name: session.event.name,
+          },
+          registrationCount:
+            session._count
+              .registrations,
+          staffCount:
+            session._count
+              .staffAssignments,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Session details failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to fetch session.",
+      });
+    }
+  }
+);
+
+// ----------------------------------------
+// Update session
+// ORGANIZER ONLY
+// ----------------------------------------
+app.patch(
+  "/api/sessions/:sessionId",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      const {
+        sessionId,
+      } = req.params;
+
+      const {
+        title,
+        startTime,
+        duration,
+        location,
+        capacity,
+      } = req.body;
+
+      if (
+        !sessionId ||
+        sessionId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid session ID is required.",
+        });
+      }
+
+      const existingSession =
+        await prisma.session.findUnique({
+          where: {
+            id: sessionId.trim(),
+          },
+          include: {
+            event: true,
+          },
+        });
+
+      if (!existingSession) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Session not found.",
+        });
+      }
+
+      if (existingSession.event.archivedAt) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Sessions of archived events cannot be edited. Restore the event first.",
+        });
+      }
+
+      const data = {};
+
+      if (title !== undefined) {
+        if (
+          typeof title !== "string" ||
+          title.trim() === ""
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Session title must be a non-empty string.",
+          });
+        }
+
+        data.title = title.trim();
+      }
+
+      let newStartTime =
+        existingSession.startTime;
+
+      if (startTime !== undefined) {
+        if (
+          typeof startTime !== "string" ||
+          startTime.trim() === ""
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Valid session start time is required.",
+          });
+        }
+
+        newStartTime =
+          parseValidDate(startTime);
+
+        if (!newStartTime) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Invalid session start time.",
+          });
+        }
+
+        data.startTime = newStartTime;
+      }
+
+      if (duration !== undefined) {
+        if (
+          !isPositiveInteger(duration)
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Duration must be a positive integer in minutes.",
+          });
+        }
+
+        data.duration = duration;
+      }
+
+      if (location !== undefined) {
+        if (
+          typeof location !== "string" ||
+          location.trim() === ""
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Session location must be a non-empty string.",
+          });
+        }
+
+        data.location =
+          location.trim();
+      }
+
+      if (capacity !== undefined) {
+        if (
+          !isPositiveInteger(capacity)
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Capacity must be a positive integer.",
+          });
+        }
+
+        const occupiedCount =
+          await prisma.registration.count(
+            {
+              where: {
+                sessionId:
+                  existingSession.id,
+                status: {
+                  in: [
+                    "RESERVED",
+                    "CONFIRMED",
+                    "CHECKED_IN",
+                  ],
+                },
+              },
+            }
+          );
+
+        if (
+          capacity < occupiedCount
+        ) {
+          return res.status(409).json({
+            success: false,
+            message:
+              "Capacity cannot be lower than currently occupied seats.",
+            occupied:
+              occupiedCount,
+            requestedCapacity:
+              capacity,
+          });
+        }
+
+        data.capacity = capacity;
+      }
+
+      // --------------------------------------
+      // Validate session against event dates
+      // --------------------------------------
+      if (
+        existingSession.event
+          .startDate &&
+        newStartTime <
+          existingSession.event
+            .startDate
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Session start time cannot be before the event start date.",
+        });
+      }
+
+      if (
+        existingSession.event.endDate &&
+        newStartTime >
+          existingSession.event
+            .endDate
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Session start time cannot be after the event end date.",
+        });
+      }
+
+      const session =
+        await prisma.session.update({
+          where: {
+            id: existingSession.id,
+          },
+          data,
+        });
+
+      res.json({
+        success: true,
+        message:
+          "Session updated successfully.",
+        session,
+      });
+    } catch (error) {
+      console.error(
+        "Session update failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to update session.",
+      });
+    }
+  }
+);
+
+// ----------------------------------------
+// Delete session
+// ORGANIZER ONLY
+//
+// Safety:
+// A session cannot be deleted when it has
+// registrations or staff assignments.
+// ----------------------------------------
+app.delete(
+  "/api/sessions/:sessionId",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      const {
+        sessionId,
+      } = req.params;
+
+      if (
+        !sessionId ||
+        sessionId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid session ID is required.",
+        });
+      }
+
+      const session =
+        await prisma.session.findUnique({
+          where: {
+            id: sessionId.trim(),
+          },
+          include: {
+            event: true,
+          },
+        });
+
+      if (!session) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Session not found.",
+        });
+      }
+
+      const registrationCount =
+        await prisma.registration.count({
+          where: {
+            sessionId: session.id,
+          },
+        });
+
+      const staffAssignmentCount =
+        await prisma.staffAssignment.count({
+          where: {
+            sessionId: session.id,
+          },
+        });
+
+      if (
+        registrationCount > 0 ||
+        staffAssignmentCount > 0
+      ) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Session cannot be deleted because it has related registrations or staff assignments.",
+          registrationCount,
+          staffAssignmentCount,
+        });
+      }
+
+      await prisma.session.delete({
+        where: {
+          id: session.id,
+        },
+      });
+
+      res.json({
+        success: true,
+        message:
+          "Session deleted successfully.",
+        sessionId: session.id,
+      });
+    } catch (error) {
+      console.error(
+        "Session deletion failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to delete session.",
+      });
+    }
+  }
+);
+
+// ========================================
+// DEVELOPMENT ONLY
+// Create test session
+// ========================================
+app.post(
+  "/api/test-session",
+  async (req, res) => {
+    try {
+      const event =
+        await prisma.event.create({
+          data: {
+            name: "Test Event",
+            description:
+              "Development test event",
+          },
+        });
+
+      const session =
+        await prisma.session.create({
+          data: {
+            eventId: event.id,
+            title: "Test Session",
+            startTime: new Date(
+              "2026-09-20T10:00:00"
+            ),
+            duration: 60,
+            location: "Bhopal",
+            capacity: 2,
+          },
+        });
+
+      res.status(201).json({
+        success: true,
+        message:
+          "Test session created.",
+        event: {
+          id: event.id,
+          name: event.name,
+        },
+        session: {
+          id: session.id,
+          title: session.title,
+          capacity:
+            session.capacity,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Test session creation failed:",
+        error
+      );
+
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to create test session.",
+      });
+    }
+  }
+);
 
 // ========================================
 // Create registration
@@ -512,7 +2140,11 @@ app.post(
         phone,
       } = req.body;
 
-      if (!sessionId || !name || !email) {
+      if (
+        !sessionId ||
+        !name ||
+        !email
+      ) {
         return res.status(400).json({
           success: false,
           message:
@@ -556,7 +2188,11 @@ app.post(
       const emailRegex =
         /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-      if (!emailRegex.test(email.trim())) {
+      if (
+        !emailRegex.test(
+          email.trim()
+        )
+      ) {
         return res.status(400).json({
           success: false,
           message:
@@ -568,18 +2204,40 @@ app.post(
         await prisma.$transaction(
           async (tx) => {
             const session =
-              await tx.session.findUnique({
-                where: {
-                  id: sessionId.trim(),
-                },
-              });
+              await tx.session.findUnique(
+                {
+                  where: {
+                    id: sessionId.trim(),
+                  },
+                  include: {
+                    event: true,
+                  },
+                }
+              );
 
             if (!session) {
-              const error = new Error(
-                "Session not found."
-              );
+              const error =
+                new Error(
+                  "Session not found."
+                );
+
               error.code =
                 "SESSION_NOT_FOUND";
+
+              throw error;
+            }
+
+            // Archived events are not open
+            // for new registrations.
+            if (session.event.archivedAt) {
+              const error =
+                new Error(
+                  "Cannot register for an archived event."
+                );
+
+              error.code =
+                "EVENT_ARCHIVED";
+
               throw error;
             }
 
@@ -593,7 +2251,8 @@ app.post(
             const occupiedCount =
               await tx.registration.count({
                 where: {
-                  sessionId: session.id,
+                  sessionId:
+                    session.id,
                   status: {
                     in: [
                       "RESERVED",
@@ -608,29 +2267,37 @@ app.post(
               occupiedCount >=
               session.capacity
             ) {
-              const error = new Error(
-                "Session is at capacity."
-              );
+              const error =
+                new Error(
+                  "Session is at capacity."
+                );
+
               error.code =
                 "SESSION_AT_CAPACITY";
+
               error.capacity =
                 session.capacity;
+
               error.occupied =
                 occupiedCount;
+
               throw error;
             }
 
-            const reservedAt = new Date();
+            const reservedAt =
+              new Date();
 
-            const expiresAt = new Date(
-              reservedAt.getTime() +
-                15 * 60 * 1000
-            );
+            const expiresAt =
+              new Date(
+                reservedAt.getTime() +
+                  15 * 60 * 1000
+              );
 
             const newRegistration =
               await tx.registration.create({
                 data: {
-                  sessionId: session.id,
+                  sessionId:
+                    session.id,
                   name: name.trim(),
                   email: email
                     .trim()
@@ -655,7 +2322,8 @@ app.post(
                   actorId: null,
                   action: "CREATED",
                   oldStatus: null,
-                  newStatus: "RESERVED",
+                  newStatus:
+                    "RESERVED",
                   note:
                     "Registration created and reserved.",
                 },
@@ -696,7 +2364,19 @@ app.post(
       ) {
         return res.status(404).json({
           success: false,
-          message: "Session not found.",
+          message:
+            "Session not found.",
+        });
+      }
+
+      if (
+        error.code ===
+        "EVENT_ARCHIVED"
+      ) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Cannot register for an archived event.",
         });
       }
 
@@ -708,8 +2388,10 @@ app.post(
           success: false,
           message:
             "Session is at capacity.",
-          capacity: error.capacity,
-          occupied: error.occupied,
+          capacity:
+            error.capacity,
+          occupied:
+            error.occupied,
         });
       }
 
@@ -743,16 +2425,20 @@ async function expireReservations() {
 
   let expiredCount = 0;
 
-  for (const registration of expiredRegistrations) {
+  for (
+    const registration of expiredRegistrations
+  ) {
     try {
       await prisma.$transaction(
         async (tx) => {
           const currentRegistration =
-            await tx.registration.findUnique({
-              where: {
-                id: registration.id,
-              },
-            });
+            await tx.registration.findUnique(
+              {
+                where: {
+                  id: registration.id,
+                },
+              }
+            );
 
           if (!currentRegistration) {
             return;
@@ -790,8 +2476,10 @@ async function expireReservations() {
                 actorId: null,
                 action:
                   "STATUS_CHANGED",
-                oldStatus: "RESERVED",
-                newStatus: "EXPIRED",
+                oldStatus:
+                  "RESERVED",
+                newStatus:
+                  "EXPIRED",
                 note:
                   "Reservation expired after holding window.",
               },
@@ -820,8 +2508,9 @@ app.post(
   "/api/registrations/:registrationId/force-expire",
   async (req, res) => {
     try {
-      const { registrationId } =
-        req.params;
+      const {
+        registrationId,
+      } = req.params;
 
       if (
         !registrationId ||
@@ -958,9 +2647,14 @@ app.patch(
   "/api/registrations/:registrationId/status",
   async (req, res) => {
     try {
-      const { registrationId } =
-        req.params;
-      const { status, note } = req.body;
+      const {
+        registrationId,
+      } = req.params;
+
+      const {
+        status,
+        note,
+      } = req.body;
 
       if (
         !registrationId ||
@@ -983,7 +2677,9 @@ app.patch(
 
       if (
         !status ||
-        !allowedStatuses.includes(status)
+        !allowedStatuses.includes(
+          status
+        )
       ) {
         return res.status(400).json({
           success: false,
@@ -1000,7 +2696,8 @@ app.patch(
       ) {
         return res.status(400).json({
           success: false,
-          message: "Note must be a string.",
+          message:
+            "Note must be a string.",
         });
       }
 
@@ -1017,23 +2714,31 @@ app.patch(
               );
 
             if (!registration) {
-              const error = new Error(
-                "Registration not found."
-              );
+              const error =
+                new Error(
+                  "Registration not found."
+                );
+
               error.code =
                 "REGISTRATION_NOT_FOUND";
+
               throw error;
             }
 
             const oldStatus =
               registration.status;
 
-            if (oldStatus === status) {
-              const error = new Error(
-                `Registration is already ${status}.`
-              );
+            if (
+              oldStatus === status
+            ) {
+              const error =
+                new Error(
+                  `Registration is already ${status}.`
+                );
+
               error.code =
                 "SAME_STATUS";
+
               throw error;
             }
 
@@ -1061,34 +2766,43 @@ app.patch(
                 status
               )
             ) {
-              const error = new Error(
-                `Invalid status transition: ${oldStatus} -> ${status}.`
-              );
+              const error =
+                new Error(
+                  `Invalid status transition: ${oldStatus} -> ${status}.`
+                );
 
               error.code =
                 "INVALID_STATUS_TRANSITION";
+
               error.oldStatus =
                 oldStatus;
-              error.newStatus = status;
+
+              error.newStatus =
+                status;
 
               throw error;
             }
 
             const timestampData = {};
 
-            if (status === "CONFIRMED") {
+            if (
+              status === "CONFIRMED"
+            ) {
               timestampData.confirmedAt =
                 new Date();
             }
 
             if (
-              status === "CHECKED_IN"
+              status ===
+              "CHECKED_IN"
             ) {
               timestampData.checkedInAt =
                 new Date();
             }
 
-            if (status === "CANCELLED") {
+            if (
+              status === "CANCELLED"
+            ) {
               timestampData.cancelledAt =
                 new Date();
             }
@@ -1115,7 +2829,8 @@ app.patch(
                   action:
                     "STATUS_CHANGED",
                   oldStatus,
-                  newStatus: status,
+                  newStatus:
+                    status,
                   note:
                     typeof note ===
                       "string" &&
@@ -1135,7 +2850,8 @@ app.patch(
         message:
           `Registration status changed to ${updatedRegistration.status}.`,
         registration: {
-          id: updatedRegistration.id,
+          id:
+            updatedRegistration.id,
           sessionId:
             updatedRegistration.sessionId,
           name:
@@ -1178,7 +2894,8 @@ app.patch(
       ) {
         return res.status(409).json({
           success: false,
-          message: error.message,
+          message:
+            error.message,
         });
       }
 
@@ -1215,8 +2932,9 @@ app.get(
   "/api/registrations/:registrationId/history",
   async (req, res) => {
     try {
-      const { registrationId } =
-        req.params;
+      const {
+        registrationId,
+      } = req.params;
 
       if (
         !registrationId ||
