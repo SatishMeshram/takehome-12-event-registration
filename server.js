@@ -24,11 +24,11 @@ if (!process.env.JWT_SECRET) {
 // Prisma + MySQL connection
 // ========================================
 const adapter = new PrismaMariaDb({
-  host: "127.0.0.1",
-  port: 3306,
-  user: "root",
+  host: process.env.DB_HOST || "127.0.0.1",
+  port: Number(process.env.DB_PORT || 3306),
+  user: process.env.DB_USER || "root",
   password: process.env.DB_PASSWORD,
-  database: "event_registration",
+  database: process.env.DB_NAME || "event_registration",
 });
 
 const prisma = new PrismaClient({ adapter });
