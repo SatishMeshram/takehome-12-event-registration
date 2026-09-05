@@ -4,6 +4,7 @@ require("dotenv").config();
 
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const multer = require("multer");
 
 const { PrismaClient } = require("@prisma/client");
 const { PrismaMariaDb } = require("@prisma/adapter-mariadb");
@@ -43,6 +44,81 @@ const PORT = process.env.PORT || 5000;
 // ========================================
 app.use(cors());
 app.use(express.json());
+
+const csvUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 },
+});
+
+// ========================================
+// CSV helpers
+// ========================================
+function parseCsvLine(line) {
+  const values = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      values.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  values.push(current.trim());
+  return values;
+}
+
+function parseCsv(text) {
+  const lines = String(text || "")
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "");
+
+  if (lines.length === 0) {
+    return { headers: [], rows: [] };
+  }
+
+  const headers = parseCsvLine(lines[0]).map((header) =>
+    header.toLowerCase().trim()
+  );
+
+  const rows = lines.slice(1).map((line) => {
+    const values = parseCsvLine(line);
+    const row = {};
+    headers.forEach((header, index) => {
+      row[header] = values[index] || "";
+    });
+    return row;
+  });
+
+  return { headers, rows };
+}
+
+function csvEscape(value) {
+  if (value === null || value === undefined) return "";
+  const text = String(value);
+  if (/[",\r\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function csvDate(value) {
+  if (!value) return "";
+  return new Date(value).toISOString();
+}
 
 // ========================================
 // Helper: validate date
@@ -3026,6 +3102,378 @@ app.post(
         success: false,
         message:
           "Failed to create registration.",
+      });
+    }
+  }
+);
+
+// ========================================
+// Bulk CSV registration import
+// ========================================
+app.post(
+  "/api/registrations/import",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  csvUpload.single("file"),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: "CSV file is required. Use multipart field name 'file'.",
+        });
+      }
+
+      const csvText = req.file.buffer.toString("utf8");
+      const { headers, rows } = parseCsv(csvText);
+      const requiredHeaders = ["sessionId", "name", "email"];
+      const normalizedHeaders = headers.map((header) => header.trim());
+      const missingHeaders = requiredHeaders.filter(
+        (header) => !normalizedHeaders.includes(header.toLowerCase())
+      );
+
+      if (missingHeaders.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "CSV is missing required columns.",
+          requiredColumns: requiredHeaders,
+          missingColumns: missingHeaders,
+        });
+      }
+
+      if (rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "CSV contains no data rows.",
+        });
+      }
+
+      if (rows.length > 1000) {
+        return res.status(400).json({
+          success: false,
+          message: "CSV may contain at most 1000 data rows per import.",
+        });
+      }
+
+      const results = [];
+      let created = 0;
+      let duplicates = 0;
+      let rejected = 0;
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+      for (let index = 0; index < rows.length; index++) {
+        const rowNumber = index + 2;
+        const row = rows[index];
+        const sessionId = (row.sessionid || row.sessionId || "").trim();
+        const name = (row.name || "").trim();
+        const email = (row.email || "").trim().toLowerCase();
+        const phone = (row.phone || "").trim();
+
+        try {
+          if (!sessionId || !name || !email) {
+            throw Object.assign(
+              new Error("sessionId, name and email are required."),
+              { code: "INVALID_ROW" }
+            );
+          }
+
+          if (!emailRegex.test(email)) {
+            throw Object.assign(
+              new Error("Please provide a valid email address."),
+              { code: "INVALID_ROW" }
+            );
+          }
+
+          const result = await prisma.$transaction(async (tx) => {
+            const session = await tx.session.findUnique({
+              where: { id: sessionId },
+              include: { event: true },
+            });
+
+            if (!session) {
+              throw Object.assign(new Error("Session not found."), {
+                code: "INVALID_ROW",
+              });
+            }
+
+            if (session.event.archivedAt) {
+              throw Object.assign(
+                new Error("Cannot register for an archived event."),
+                { code: "INVALID_ROW" }
+              );
+            }
+
+            await tx.$queryRaw`
+              SELECT id
+              FROM Session
+              WHERE id = ${session.id}
+              FOR UPDATE
+            `;
+
+            const existing = await tx.registration.findFirst({
+              where: {
+                sessionId: session.id,
+                email,
+                status: {
+                  not: "CANCELLED",
+                },
+              },
+            });
+
+            if (existing) {
+              throw Object.assign(
+                new Error("Attendee is already registered for this session."),
+                { code: "DUPLICATE" }
+              );
+            }
+
+            const occupiedCount = await tx.registration.count({
+              where: {
+                sessionId: session.id,
+                status: {
+                  in: ["RESERVED", "CONFIRMED", "CHECKED_IN"],
+                },
+              },
+            });
+
+            if (occupiedCount >= session.capacity) {
+              throw Object.assign(new Error("Session is at capacity."), {
+                code: "CAPACITY",
+                capacity: session.capacity,
+                occupied: occupiedCount,
+              });
+            }
+
+            const reservedAt = new Date();
+            const expiresAt = new Date(reservedAt.getTime() + 15 * 60 * 1000);
+
+            const registration = await tx.registration.create({
+              data: {
+                sessionId: session.id,
+                name,
+                email,
+                phone: phone || null,
+                status: "RESERVED",
+                reservedAt,
+                expiresAt,
+              },
+            });
+
+            await tx.registrationHistory.create({
+              data: {
+                registrationId: registration.id,
+                actorId: req.user.id,
+                action: "CREATED",
+                oldStatus: null,
+                newStatus: "RESERVED",
+                note: "Registration created through CSV import.",
+              },
+            });
+
+            return registration;
+          });
+
+          created++;
+          results.push({
+            row: rowNumber,
+            status: "CREATED",
+            registrationId: result.id,
+            sessionId: result.sessionId,
+          });
+        } catch (error) {
+          if (error.code === "DUPLICATE") {
+            duplicates++;
+            results.push({
+              row: rowNumber,
+              status: "DUPLICATE",
+              reason: error.message,
+            });
+          } else {
+            rejected++;
+            results.push({
+              row: rowNumber,
+              status: "REJECTED",
+              reason: error.message || "Row could not be imported.",
+              ...(error.code === "CAPACITY"
+                ? {
+                    capacity: error.capacity,
+                    occupied: error.occupied,
+                  }
+                : {}),
+            });
+          }
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "CSV import completed.",
+        summary: {
+          totalRows: rows.length,
+          created,
+          duplicates,
+          rejected,
+        },
+        results,
+      });
+    } catch (error) {
+      console.error("CSV registration import failed:", error);
+
+      if (error instanceof multer.MulterError) {
+        return res.status(400).json({
+          success: false,
+          message:
+            error.code === "LIMIT_FILE_SIZE"
+              ? "CSV file is too large. Maximum size is 2 MB."
+              : "CSV upload failed.",
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to import registrations from CSV.",
+      });
+    }
+  }
+);
+
+// ========================================
+// CSV check-in sheet export
+// ========================================
+app.get(
+  "/api/registrations/export",
+  authenticateToken,
+  requireRole("ORGANIZER", "CHECKIN_STAFF"),
+  async (req, res) => {
+    try {
+      const {
+        search,
+        eventId,
+        sessionId,
+        status,
+        sort = "reservedAt",
+        order = "desc",
+      } = req.query;
+
+      const where = {};
+
+      if (search && String(search).trim() !== "") {
+        const searchValue = String(search).trim();
+        where.OR = [
+          { name: { contains: searchValue } },
+          { email: { contains: searchValue } },
+        ];
+      }
+
+      if (status) {
+        const allowedStatuses = [
+          "RESERVED",
+          "CONFIRMED",
+          "CHECKED_IN",
+          "CANCELLED",
+          "EXPIRED",
+        ];
+        if (!allowedStatuses.includes(String(status))) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid status filter.",
+          });
+        }
+        where.status = String(status);
+      }
+
+      if (sessionId) {
+        where.sessionId = String(sessionId);
+      }
+
+      if (eventId) {
+        where.session = {
+          eventId: String(eventId),
+        };
+      }
+
+      const allowedSorts = {
+        reservedAt: { reservedAt: order === "asc" ? "asc" : "desc" },
+        status: { status: order === "asc" ? "asc" : "desc" },
+        session: { session: { title: order === "asc" ? "asc" : "desc" } },
+      };
+
+      const orderBy = allowedSorts[String(sort)] || allowedSorts.reservedAt;
+
+      const registrations = await prisma.registration.findMany({
+        where,
+        orderBy,
+        include: {
+          session: {
+            include: {
+              event: true,
+            },
+          },
+        },
+      });
+
+      const header = [
+        "Registration ID",
+        "Attendee Name",
+        "Email",
+        "Phone",
+        "Event",
+        "Session",
+        "Session Start",
+        "Duration (minutes)",
+        "Location",
+        "Capacity",
+        "Status",
+        "Reserved At",
+        "Expires At",
+        "Confirmed At",
+        "Checked In At",
+        "Cancelled At",
+      ];
+
+      const lines = [header.map(csvEscape).join(",")];
+
+      for (const registration of registrations) {
+        lines.push(
+          [
+            registration.id,
+            registration.name,
+            registration.email,
+            registration.phone,
+            registration.session.event.name,
+            registration.session.title,
+            csvDate(registration.session.startTime),
+            registration.session.duration,
+            registration.session.location,
+            registration.session.capacity,
+            registration.status,
+            csvDate(registration.reservedAt),
+            csvDate(registration.expiresAt),
+            csvDate(registration.confirmedAt),
+            csvDate(registration.checkedInAt),
+            csvDate(registration.cancelledAt),
+          ]
+            .map(csvEscape)
+            .join(",")
+        );
+      }
+
+      const csv = lines.join("\r\n") + "\r\n";
+      const filename = `check-in-sheet-${new Date()
+        .toISOString()
+        .slice(0, 10)}.csv`;
+
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`
+      );
+      return res.send(csv);
+    } catch (error) {
+      console.error("CSV registration export failed:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to export registrations as CSV.",
       });
     }
   }
