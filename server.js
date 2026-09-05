@@ -2125,6 +2125,229 @@ app.post(
 );
 
 // ========================================
+// Registration management list
+// Server-side search, filters, sorting and pagination
+// ========================================
+app.get(
+  "/api/registrations",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const page = Number(req.query.page ?? 1);
+      const pageSize = Number(req.query.pageSize ?? 10);
+      if (!Number.isInteger(page) || page < 1) {
+        return res.status(400).json({
+          success: false,
+          message: "Page must be a positive integer.",
+        });
+      }
+      if (
+        !Number.isInteger(pageSize) ||
+        pageSize < 1 ||
+        pageSize > 100
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Page size must be an integer between 1 and 100.",
+        });
+      }
+      const search =
+        typeof req.query.search === "string"
+          ? req.query.search.trim()
+          : "";
+      const eventId =
+        typeof req.query.eventId === "string"
+          ? req.query.eventId.trim()
+          : "";
+      const sessionId =
+        typeof req.query.sessionId === "string"
+          ? req.query.sessionId.trim()
+          : "";
+      const status =
+        typeof req.query.status === "string"
+          ? req.query.status.trim().toUpperCase()
+          : "";
+      const allowedStatuses = [
+        "RESERVED",
+        "CONFIRMED",
+        "CHECKED_IN",
+        "CANCELLED",
+        "EXPIRED",
+      ];
+      if (status && !allowedStatuses.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid registration status.",
+          allowedStatuses,
+        });
+      }
+      const sort =
+        typeof req.query.sort === "string"
+          ? req.query.sort.trim()
+          : "reservedAt";
+      const order =
+        typeof req.query.order === "string"
+          ? req.query.order.trim().toLowerCase()
+          : "desc";
+      const allowedSorts = [
+        "reservedAt",
+        "status",
+        "session",
+      ];
+      if (!allowedSorts.includes(sort)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid sort field.",
+          allowedSorts,
+        });
+      }
+      if (order !== "asc" && order !== "desc") {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Sort order must be either asc or desc.",
+        });
+      }
+      const where = {};
+      if (search) {
+        where.OR = [
+          {
+            name: {
+              contains: search,
+            },
+          },
+          {
+            email: {
+              contains: search,
+            },
+          },
+        ];
+      }
+      if (sessionId) {
+        where.sessionId = sessionId;
+      }
+      if (eventId) {
+        where.session = {
+          eventId,
+        };
+      }
+      if (status) {
+        where.status = status;
+      }
+      let orderBy;
+      if (sort === "reservedAt") {
+        orderBy = [
+          {
+            reservedAt: order,
+          },
+          {
+            id: "asc",
+          },
+        ];
+      } else if (sort === "status") {
+        orderBy = [
+          {
+            status: order,
+          },
+          {
+            reservedAt: "desc",
+          },
+          {
+            id: "asc",
+          },
+        ];
+      } else {
+        orderBy = [
+          {
+            session: {
+              title: order,
+            },
+          },
+          {
+            reservedAt: "desc",
+          },
+          {
+            id: "asc",
+          },
+        ];
+      }
+      const skip = (page - 1) * pageSize;
+      const [total, registrations] =
+        await prisma.$transaction([
+          prisma.registration.count({
+            where,
+          }),
+          prisma.registration.findMany({
+            where,
+            orderBy,
+            skip,
+            take: pageSize,
+            include: {
+              session: {
+                select: {
+                  id: true,
+                  title: true,
+                  startTime: true,
+                  duration: true,
+                  location: true,
+                  capacity: true,
+                  event: {
+                    select: {
+                      id: true,
+                      name: true,
+                      startDate: true,
+                      endDate: true,
+                      archivedAt: true,
+                    },
+                  },
+                },
+              },
+            },
+          }),
+        ]);
+      const totalPages =
+        total === 0
+          ? 0
+          : Math.ceil(total / pageSize);
+      res.json({
+        success: true,
+        data: registrations,
+        pagination: {
+          page,
+          pageSize,
+          total,
+          totalPages,
+          hasNextPage:
+            totalPages > 0 &&
+            page < totalPages,
+          hasPreviousPage:
+            page > 1 &&
+            page <= totalPages,
+        },
+        filters: {
+          search,
+          eventId: eventId || null,
+          sessionId: sessionId || null,
+          status: status || null,
+          sort,
+          order,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Registration list fetch failed:",
+        error
+      );
+      res.status(500).json({
+        success: false,
+        message:
+          "Failed to fetch registrations.",
+      });
+    }
+  }
+);
+// ========================================
 // Create registration
 // Concurrency-safe capacity reservation
 // + Registration history
@@ -2643,27 +2866,29 @@ setInterval(async () => {
 // ========================================
 // Update registration status
 // ========================================
+// ORGANIZER:
+//   RESERVED -> CONFIRMED
+//   RESERVED -> CANCELLED
+//   CONFIRMED -> CANCELLED
+//
+// CHECKIN STAFF:
+//   CONFIRMED -> CHECKED_IN
+//
+// All status changes are authenticated and
+// recorded in immutable registration history.
+// ========================================
 app.patch(
   "/api/registrations/:registrationId/status",
+  authenticateToken,
   async (req, res) => {
     try {
-      const {
-        registrationId,
-      } = req.params;
+      const { registrationId } = req.params;
+      const { status, note } = req.body;
 
-      const {
-        status,
-        note,
-      } = req.body;
-
-      if (
-        !registrationId ||
-        registrationId.trim() === ""
-      ) {
+      if (!registrationId || registrationId.trim() === "") {
         return res.status(400).json({
           success: false,
-          message:
-            "Valid registration ID is required.",
+          message: "Valid registration ID is required.",
         });
       }
 
@@ -2675,16 +2900,10 @@ app.patch(
         "EXPIRED",
       ];
 
-      if (
-        !status ||
-        !allowedStatuses.includes(
-          status
-        )
-      ) {
+      if (!status || !allowedStatuses.includes(status)) {
         return res.status(400).json({
           success: false,
-          message:
-            "Valid registration status is required.",
+          message: "Valid registration status is required.",
           allowedStatuses,
         });
       }
@@ -2696,180 +2915,158 @@ app.patch(
       ) {
         return res.status(400).json({
           success: false,
-          message:
-            "Note must be a string.",
+          message: "Note must be a string.",
         });
       }
 
-      const updatedRegistration =
-        await prisma.$transaction(
-          async (tx) => {
-            const registration =
-              await tx.registration.findUnique(
-                {
-                  where: {
-                    id: registrationId.trim(),
+      if (status === "EXPIRED") {
+        return res.status(403).json({
+          success: false,
+          message:
+            "EXPIRED status is managed automatically by the reservation expiry process.",
+        });
+      }
+
+      const updatedRegistration = await prisma.$transaction(
+        async (tx) => {
+          const registration =
+            await tx.registration.findUnique({
+              where: {
+                id: registrationId.trim(),
+              },
+              include: {
+                session: {
+                  include: {
+                    event: true,
                   },
-                }
-              );
-
-            if (!registration) {
-              const error =
-                new Error(
-                  "Registration not found."
-                );
-
-              error.code =
-                "REGISTRATION_NOT_FOUND";
-
-              throw error;
-            }
-
-            const oldStatus =
-              registration.status;
-
-            if (
-              oldStatus === status
-            ) {
-              const error =
-                new Error(
-                  `Registration is already ${status}.`
-                );
-
-              error.code =
-                "SAME_STATUS";
-
-              throw error;
-            }
-
-            const validTransitions = {
-              RESERVED: [
-                "CONFIRMED",
-                "CANCELLED",
-              ],
-              CONFIRMED: [
-                "CHECKED_IN",
-                "CANCELLED",
-              ],
-              CHECKED_IN: [],
-              CANCELLED: [],
-              EXPIRED: [],
-            };
-
-            const allowedNextStatuses =
-              validTransitions[
-                oldStatus
-              ] || [];
-
-            if (
-              !allowedNextStatuses.includes(
-                status
-              )
-            ) {
-              const error =
-                new Error(
-                  `Invalid status transition: ${oldStatus} -> ${status}.`
-                );
-
-              error.code =
-                "INVALID_STATUS_TRANSITION";
-
-              error.oldStatus =
-                oldStatus;
-
-              error.newStatus =
-                status;
-
-              throw error;
-            }
-
-            const timestampData = {};
-
-            if (
-              status === "CONFIRMED"
-            ) {
-              timestampData.confirmedAt =
-                new Date();
-            }
-
-            if (
-              status ===
-              "CHECKED_IN"
-            ) {
-              timestampData.checkedInAt =
-                new Date();
-            }
-
-            if (
-              status === "CANCELLED"
-            ) {
-              timestampData.cancelledAt =
-                new Date();
-            }
-
-            const updated =
-              await tx.registration.update(
-                {
-                  where: {
-                    id: registration.id,
-                  },
-                  data: {
-                    status,
-                    ...timestampData,
-                  },
-                }
-              );
-
-            await tx.registrationHistory.create(
-              {
-                data: {
-                  registrationId:
-                    registration.id,
-                  actorId: null,
-                  action:
-                    "STATUS_CHANGED",
-                  oldStatus,
-                  newStatus:
-                    status,
-                  note:
-                    typeof note ===
-                      "string" &&
-                    note.trim() !== ""
-                      ? note.trim()
-                      : `Status changed from ${oldStatus} to ${status}.`,
                 },
-              }
-            );
+              },
+            });
 
-            return updated;
+          if (!registration) {
+            const error = new Error("Registration not found.");
+            error.code = "REGISTRATION_NOT_FOUND";
+            throw error;
           }
-        );
 
-      res.json({
+          const oldStatus = registration.status;
+
+          if (oldStatus === status) {
+            const error = new Error(
+              `Registration is already ${status}.`
+            );
+            error.code = "SAME_STATUS";
+            throw error;
+          }
+
+          const organizerTransitions = {
+            RESERVED: ["CONFIRMED", "CANCELLED"],
+            CONFIRMED: ["CANCELLED"],
+            CHECKED_IN: [],
+            CANCELLED: [],
+            EXPIRED: [],
+          };
+
+          const staffTransitions = {
+            RESERVED: [],
+            CONFIRMED: ["CHECKED_IN"],
+            CHECKED_IN: [],
+            CANCELLED: [],
+            EXPIRED: [],
+          };
+
+          let allowedNextStatuses = [];
+
+          if (req.user.role === "ORGANIZER") {
+            allowedNextStatuses =
+              organizerTransitions[oldStatus] || [];
+          } else if (req.user.role === "CHECKIN_STAFF") {
+            allowedNextStatuses =
+              staffTransitions[oldStatus] || [];
+          } else {
+            const error = new Error(
+              "Your account role is not allowed to update registration status."
+            );
+            error.code = "ROLE_NOT_ALLOWED";
+            throw error;
+          }
+
+          if (!allowedNextStatuses.includes(status)) {
+            const error = new Error(
+              `Invalid status transition: ${oldStatus} -> ${status}.`
+            );
+            error.code = "INVALID_STATUS_TRANSITION";
+            error.oldStatus = oldStatus;
+            error.newStatus = status;
+            error.currentRole = req.user.role;
+            error.allowedNextStatuses = allowedNextStatuses;
+            throw error;
+          }
+
+          const timestampData = {};
+
+          if (status === "CONFIRMED") {
+            timestampData.confirmedAt = new Date();
+          }
+
+          if (status === "CHECKED_IN") {
+            timestampData.checkedInAt = new Date();
+          }
+
+          if (status === "CANCELLED") {
+            timestampData.cancelledAt = new Date();
+          }
+
+          const updated = await tx.registration.update({
+            where: {
+              id: registration.id,
+            },
+            data: {
+              status,
+              ...timestampData,
+            },
+          });
+
+          await tx.registrationHistory.create({
+            data: {
+              registrationId: registration.id,
+              actorId: req.user.id,
+              action: "STATUS_CHANGED",
+              oldStatus,
+              newStatus: status,
+              note:
+                typeof note === "string" &&
+                note.trim() !== ""
+                  ? note.trim()
+                  : `Status changed from ${oldStatus} to ${status}.`,
+            },
+          });
+
+          return updated;
+        }
+      );
+
+      return res.json({
         success: true,
         message:
           `Registration status changed to ${updatedRegistration.status}.`,
         registration: {
-          id:
-            updatedRegistration.id,
-          sessionId:
-            updatedRegistration.sessionId,
-          name:
-            updatedRegistration.name,
-          email:
-            updatedRegistration.email,
-          status:
-            updatedRegistration.status,
-          reservedAt:
-            updatedRegistration.reservedAt,
-          expiresAt:
-            updatedRegistration.expiresAt,
-          confirmedAt:
-            updatedRegistration.confirmedAt,
-          checkedInAt:
-            updatedRegistration.checkedInAt,
-          cancelledAt:
-            updatedRegistration.cancelledAt,
+          id: updatedRegistration.id,
+          sessionId: updatedRegistration.sessionId,
+          name: updatedRegistration.name,
+          email: updatedRegistration.email,
+          status: updatedRegistration.status,
+          reservedAt: updatedRegistration.reservedAt,
+          expiresAt: updatedRegistration.expiresAt,
+          confirmedAt: updatedRegistration.confirmedAt,
+          checkedInAt: updatedRegistration.checkedInAt,
+          cancelledAt: updatedRegistration.cancelledAt,
+        },
+        actor: {
+          id: req.user.id,
+          name: req.user.name,
+          email: req.user.email,
+          role: req.user.role,
         },
       });
     } catch (error) {
@@ -2878,45 +3075,41 @@ app.patch(
         error
       );
 
-      if (
-        error.code ===
-        "REGISTRATION_NOT_FOUND"
-      ) {
+      if (error.code === "REGISTRATION_NOT_FOUND") {
         return res.status(404).json({
           success: false,
-          message:
-            "Registration not found.",
+          message: "Registration not found.",
         });
       }
 
-      if (
-        error.code === "SAME_STATUS"
-      ) {
+      if (error.code === "SAME_STATUS") {
         return res.status(409).json({
           success: false,
-          message:
-            error.message,
+          message: error.message,
         });
       }
 
-      if (
-        error.code ===
-        "INVALID_STATUS_TRANSITION"
-      ) {
+      if (error.code === "INVALID_STATUS_TRANSITION") {
         return res.status(409).json({
           success: false,
-          message:
-            "Invalid status transition.",
-          explanation:
-            error.message,
-          oldStatus:
-            error.oldStatus,
-          newStatus:
-            error.newStatus,
+          message: "Invalid status transition.",
+          explanation: error.message,
+          oldStatus: error.oldStatus,
+          newStatus: error.newStatus,
+          currentRole: error.currentRole,
+          allowedNextStatuses:
+            error.allowedNextStatuses,
         });
       }
 
-      res.status(500).json({
+      if (error.code === "ROLE_NOT_ALLOWED") {
+        return res.status(403).json({
+          success: false,
+          message: error.message,
+        });
+      }
+
+      return res.status(500).json({
         success: false,
         message:
           "Failed to update registration status.",
@@ -2930,6 +3123,7 @@ app.patch(
 // ========================================
 app.get(
   "/api/registrations/:registrationId/history",
+  authenticateToken,
   async (req, res) => {
     try {
       const {

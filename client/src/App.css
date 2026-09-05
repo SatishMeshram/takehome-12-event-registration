@@ -1,0 +1,119 @@
+
+.app {
+  min-height: 100vh;
+  background: #f5f7fa;
+}
+
+.header {
+  background: #1f2937;
+  color: white;
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 36px;
+}
+
+.header p {
+  margin-top: 10px;
+  font-size: 18px;
+}
+
+.main {
+  display: flex;
+  justify-content: center;
+  padding: 50px 20px;
+}
+
+.event-card,
+.form-card {
+  width: 100%;
+  max-width: 600px;
+  background: white;
+  padding: 30px;
+  border-radius: 12px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+}
+
+.event-card h2,
+.form-card h2 {
+  margin-top: 0;
+  color: #6b7280;
+  font-size: 18px;
+}
+
+.event-card h3 {
+  font-size: 28px;
+  margin: 15px 0;
+}
+
+.event-card p {
+  color: #4b5563;
+  line-height: 1.6;
+}
+
+.event-details {
+  margin: 25px 0;
+}
+
+.event-details p {
+  margin: 8px 0;
+}
+
+.event-card button,
+.form-actions button {
+  border: none;
+  background: #2563eb;
+  color: white;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.event-card button:hover,
+.form-actions button:hover {
+  background: #1d4ed8;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.form-group input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 16px;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 25px;
+}
+
+.form-actions button:first-child {
+  background: #6b7280;
+}
+
+.form-actions button:first-child:hover {
+  background: #4b5563;
+}
+
