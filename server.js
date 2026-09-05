@@ -2063,6 +2063,410 @@ app.delete(
   }
 );
 
+
+// ========================================
+// STAFF ASSIGNMENT MANAGEMENT
+// ========================================
+
+// ----------------------------------------
+// Assign check-in staff to a session
+// ORGANIZER ONLY
+//
+// Rules:
+// - Staff user must exist.
+// - User must have CHECKIN_STAFF role.
+// - Session must exist.
+// - Archived events cannot receive assignments.
+// - Duplicate assignment is rejected safely.
+// ----------------------------------------
+app.post(
+  "/api/sessions/:sessionId/staff",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      const { sessionId } = req.params;
+      const { userId } = req.body;
+
+      if (
+        !sessionId ||
+        sessionId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid session ID is required.",
+        });
+      }
+
+      if (
+        typeof userId !== "string" ||
+        userId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid staff user ID is required.",
+        });
+      }
+
+      const session =
+        await prisma.session.findUnique({
+          where: {
+            id: sessionId.trim(),
+          },
+          include: {
+            event: true,
+          },
+        });
+
+      if (!session) {
+        return res.status(404).json({
+          success: false,
+          message: "Session not found.",
+        });
+      }
+
+      if (session.event.archivedAt) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Cannot assign staff to a session belonging to an archived event.",
+        });
+      }
+
+      const staffUser =
+        await prisma.user.findUnique({
+          where: {
+            id: userId.trim(),
+          },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+          },
+        });
+
+      if (!staffUser) {
+        return res.status(404).json({
+          success: false,
+          message: "Staff user not found.",
+        });
+      }
+
+      if (
+        staffUser.role !== "CHECKIN_STAFF"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Only CHECKIN_STAFF users can be assigned to sessions.",
+          currentRole: staffUser.role,
+        });
+      }
+
+      const existingAssignment =
+        await prisma.staffAssignment.findUnique({
+          where: {
+            sessionId_userId: {
+              sessionId: session.id,
+              userId: staffUser.id,
+            },
+          },
+        });
+
+      if (existingAssignment) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "This staff member is already assigned to this session.",
+          assignmentId:
+            existingAssignment.id,
+        });
+      }
+
+      const assignment =
+        await prisma.staffAssignment.create({
+          data: {
+            sessionId: session.id,
+            userId: staffUser.id,
+          },
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                role: true,
+              },
+            },
+            session: {
+              select: {
+                id: true,
+                title: true,
+                startTime: true,
+                duration: true,
+                location: true,
+                capacity: true,
+              },
+            },
+          },
+        });
+
+      return res.status(201).json({
+        success: true,
+        message:
+          "Check-in staff assigned successfully.",
+        assignment,
+      });
+    } catch (error) {
+      console.error(
+        "Staff assignment failed:",
+        error
+      );
+
+      if (error.code === "P2002") {
+        return res.status(409).json({
+          success: false,
+          message:
+            "This staff member is already assigned to this session.",
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to assign check-in staff.",
+      });
+    }
+  }
+);
+
+// ----------------------------------------
+// Remove check-in staff from a session
+// ORGANIZER ONLY
+// ----------------------------------------
+app.delete(
+  "/api/sessions/:sessionId/staff/:userId",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      const {
+        sessionId,
+        userId,
+      } = req.params;
+
+      if (
+        !sessionId ||
+        sessionId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid session ID is required.",
+        });
+      }
+
+      if (
+        !userId ||
+        userId.trim() === ""
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Valid staff user ID is required.",
+        });
+      }
+
+      const assignment =
+        await prisma.staffAssignment.findUnique({
+          where: {
+            sessionId_userId: {
+              sessionId: sessionId.trim(),
+              userId: userId.trim(),
+            },
+          },
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                role: true,
+              },
+            },
+            session: {
+              select: {
+                id: true,
+                title: true,
+              },
+            },
+          },
+        });
+
+      if (!assignment) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "Staff assignment not found.",
+        });
+      }
+
+      await prisma.staffAssignment.delete({
+        where: {
+          id: assignment.id,
+        },
+      });
+
+      return res.json({
+        success: true,
+        message:
+          "Check-in staff removed successfully.",
+        assignment: {
+          id: assignment.id,
+          sessionId:
+            assignment.sessionId,
+          userId:
+            assignment.userId,
+          staff: assignment.user,
+          session:
+            assignment.session,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Staff removal failed:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to remove check-in staff.",
+      });
+    }
+  }
+);
+
+// ----------------------------------------
+// Get sessions assigned to current staff
+// CHECKIN STAFF ONLY
+//
+// Security:
+// userId is taken from JWT/current account,
+// never from request parameters.
+// ----------------------------------------
+app.get(
+  "/api/staff/me/sessions",
+  authenticateToken,
+  requireRole("CHECKIN_STAFF"),
+  async (req, res) => {
+    try {
+      const assignments =
+        await prisma.staffAssignment.findMany({
+          where: {
+            userId: req.user.id,
+          },
+          orderBy: {
+            session: {
+              startTime: "asc",
+            },
+          },
+          include: {
+            session: {
+              include: {
+                event: {
+                  select: {
+                    id: true,
+                    name: true,
+                    description: true,
+                    startDate: true,
+                    endDate: true,
+                    archivedAt: true,
+                  },
+                },
+                _count: {
+                  select: {
+                    registrations: true,
+                    staffAssignments: true,
+                  },
+                },
+              },
+            },
+          },
+        });
+
+      const activeAssignments =
+        assignments.filter(
+          (assignment) =>
+            !assignment.session.event
+              .archivedAt
+        );
+
+      return res.json({
+        success: true,
+        staff: {
+          id: req.user.id,
+          name: req.user.name,
+          email: req.user.email,
+          role: req.user.role,
+        },
+        count: activeAssignments.length,
+        sessions:
+          activeAssignments.map(
+            (assignment) => ({
+              assignmentId:
+                assignment.id,
+              assignedAt:
+                assignment.createdAt,
+              session: {
+                id:
+                  assignment.session.id,
+                title:
+                  assignment.session.title,
+                startTime:
+                  assignment.session
+                    .startTime,
+                duration:
+                  assignment.session
+                    .duration,
+                location:
+                  assignment.session
+                    .location,
+                capacity:
+                  assignment.session
+                    .capacity,
+                registrationCount:
+                  assignment.session
+                    ._count
+                    .registrations,
+                staffCount:
+                  assignment.session
+                    ._count
+                    .staffAssignments,
+              },
+              event:
+                assignment.session.event,
+            })
+          ),
+      });
+    } catch (error) {
+      console.error(
+        "Staff session list failed:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Failed to fetch assigned sessions.",
+      });
+    }
+  }
+);
+
 // ========================================
 // DEVELOPMENT ONLY
 // Create test session
@@ -2991,6 +3395,43 @@ app.patch(
             throw error;
           }
 
+          // ----------------------------------------
+          // CHECK-IN STAFF SESSION AUTHORIZATION
+          //
+          // A staff member may check in an attendee
+          // only when that staff member is explicitly
+          // assigned to the attendee's session.
+          // ----------------------------------------
+          if (
+            status === "CHECKED_IN" &&
+            req.user.role === "CHECKIN_STAFF"
+          ) {
+            const assignment =
+              await tx.staffAssignment.findUnique({
+                where: {
+                  sessionId_userId: {
+                    sessionId:
+                      registration.sessionId,
+                    userId: req.user.id,
+                  },
+                },
+              });
+
+            if (!assignment) {
+              const error = new Error(
+                "You are not assigned to this session and cannot check in this attendee."
+              );
+
+              error.code =
+                "STAFF_NOT_ASSIGNED";
+
+              error.sessionId =
+                registration.sessionId;
+
+              throw error;
+            }
+          }
+
           if (!allowedNextStatuses.includes(status)) {
             const error = new Error(
               `Invalid status transition: ${oldStatus} -> ${status}.`
@@ -3099,6 +3540,17 @@ app.patch(
           currentRole: error.currentRole,
           allowedNextStatuses:
             error.allowedNextStatuses,
+        });
+      }
+
+      if (error.code === "STAFF_NOT_ASSIGNED") {
+        return res.status(403).json({
+          success: false,
+          message: error.message,
+          sessionId: error.sessionId,
+          requiredRole: "CHECKIN_STAFF",
+          requirement:
+            "Staff member must be assigned to the session before checking in attendees.",
         });
       }
 
