@@ -357,16 +357,11 @@ app.post(
         });
       }
 
-      const allowedRoles = [
-        "ORGANIZER",
-        "CHECKIN_STAFF",
-      ];
-
-      if (!allowedRoles.includes(role)) {
-        return res.status(400).json({
+      if (role !== "CHECKIN_STAFF") {
+        return res.status(403).json({
           success: false,
-          message: "Invalid role.",
-          allowedRoles,
+          message:
+            "Public registration is available only for check-in staff. Organizer accounts must be created by an authorized administrator.",
         });
       }
 
@@ -607,6 +602,7 @@ app.post(
       const {
         name,
         description,
+        venue,
         startDate,
         endDate,
       } = req.body;
@@ -645,6 +641,27 @@ app.post(
           success: false,
           message:
             "Description must be a string.",
+        });
+      }
+
+      // --------------------------------------
+      // Validate venue
+      // --------------------------------------
+      if (
+        venue !== undefined &&
+        venue !== null &&
+        typeof venue !== "string"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Venue must be a string.",
+        });
+      }
+
+      if (typeof venue === "string" && venue.trim().length > 200) {
+        return res.status(400).json({
+          success: false,
+          message: "Venue cannot exceed 200 characters.",
         });
       }
 
@@ -709,6 +726,11 @@ app.post(
               description.trim() !== ""
                 ? description.trim()
                 : null,
+            venue:
+              typeof venue === "string" &&
+              venue.trim() !== ""
+                ? venue.trim()
+                : null,
             startDate: parsedStartDate,
             endDate: parsedEndDate,
           },
@@ -729,6 +751,7 @@ app.post(
           id: event.id,
           name: event.name,
           description: event.description,
+          venue: event.venue,
           startDate: event.startDate,
           endDate: event.endDate,
           archivedAt: event.archivedAt,
@@ -857,6 +880,7 @@ app.get(
           id: event.id,
           name: event.name,
           description: event.description,
+          venue: event.venue,
           startDate: event.startDate,
           endDate: event.endDate,
           archivedAt: event.archivedAt,
@@ -995,6 +1019,7 @@ app.get(
           id: event.id,
           name: event.name,
           description: event.description,
+          venue: event.venue,
           startDate: event.startDate,
           endDate: event.endDate,
           archivedAt: event.archivedAt,
@@ -1059,6 +1084,7 @@ app.patch(
       const {
         name,
         description,
+        venue,
         startDate,
         endDate,
       } = req.body;
@@ -1137,6 +1163,30 @@ app.patch(
           typeof description === "string" &&
           description.trim() !== ""
             ? description.trim()
+            : null;
+      }
+
+      if (venue !== undefined) {
+        if (
+          venue !== null &&
+          typeof venue !== "string"
+        ) {
+          return res.status(400).json({
+            success: false,
+            message: "Venue must be a string or null.",
+          });
+        }
+
+        if (typeof venue === "string" && venue.trim().length > 200) {
+          return res.status(400).json({
+            success: false,
+            message: "Venue cannot exceed 200 characters.",
+          });
+        }
+
+        data.venue =
+          typeof venue === "string" && venue.trim() !== ""
+            ? venue.trim()
             : null;
       }
 
@@ -1224,6 +1274,7 @@ app.patch(
           id: event.id,
           name: event.name,
           description: event.description,
+          venue: event.venue,
           startDate: event.startDate,
           endDate: event.endDate,
           archivedAt: event.archivedAt,
@@ -2545,66 +2596,6 @@ app.get(
 
 // ========================================
 // DEVELOPMENT ONLY
-// Create test session
-// ========================================
-app.post(
-  "/api/test-session",
-  async (req, res) => {
-    try {
-      const event =
-        await prisma.event.create({
-          data: {
-            name: "Test Event",
-            description:
-              "Development test event",
-          },
-        });
-
-      const session =
-        await prisma.session.create({
-          data: {
-            eventId: event.id,
-            title: "Test Session",
-            startTime: new Date(
-              "2026-09-20T10:00:00"
-            ),
-            duration: 60,
-            location: "Bhopal",
-            capacity: 2,
-          },
-        });
-
-      res.status(201).json({
-        success: true,
-        message:
-          "Test session created.",
-        event: {
-          id: event.id,
-          name: event.name,
-        },
-        session: {
-          id: session.id,
-          title: session.title,
-          capacity:
-            session.capacity,
-        },
-      });
-    } catch (error) {
-      console.error(
-        "Test session creation failed:",
-        error
-      );
-
-      res.status(500).json({
-        success: false,
-        message:
-          "Failed to create test session.",
-      });
-    }
-  }
-);
-
-// ========================================
 // Registration management list
 // Server-side search, filters, sorting and pagination
 // ========================================
@@ -2828,6 +2819,78 @@ app.get(
   }
 );
 // ========================================
+// Capacity alert helper
+// ========================================
+// Creates an active AT_CAPACITY alert when a session becomes full.
+// If an older alert was dismissed and the session fills again, a new
+// alert is created. An existing active alert is reused (no duplicates).
+async function syncCapacityAlert(sessionId, tx = prisma) {
+  const session = await tx.session.findUnique({
+    where: { id: sessionId },
+    select: {
+      id: true,
+      title: true,
+      capacity: true,
+      eventId: true,
+    },
+  });
+
+  if (!session) return null;
+
+  const occupied = await tx.registration.count({
+    where: {
+      sessionId: session.id,
+      status: {
+        in: ["RESERVED", "CONFIRMED", "CHECKED_IN"],
+      },
+    },
+  });
+
+  if (occupied < session.capacity) {
+    return null;
+  }
+
+  const latestAlert = await tx.alert.findFirst({
+    where: {
+      sessionId: session.id,
+      type: "AT_CAPACITY",
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  // Keep a dismissed alert dismissed while the session remains continuously
+  // full. A new alert is created only after there is evidence that a seat
+  // became available (CANCELLED/EXPIRED) after the previous alert.
+  if (latestAlert) {
+    if (!latestAlert.dismissed) {
+      return latestAlert;
+    }
+
+    const seatFreedAfterAlert = await tx.registrationHistory.findFirst({
+      where: {
+        registration: { sessionId: session.id },
+        newStatus: { in: ["CANCELLED", "EXPIRED"] },
+        createdAt: { gt: latestAlert.createdAt },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!seatFreedAfterAlert) {
+      return latestAlert;
+    }
+  }
+
+  return tx.alert.create({
+    data: {
+      sessionId: session.id,
+      type: "AT_CAPACITY",
+      message: `Session "${session.title}" is at capacity (${occupied}/${session.capacity}).`,
+      dismissed: false,
+    },
+  });
+}
+
+// ========================================
 // Create registration
 // Concurrency-safe capacity reservation
 // + Registration history
@@ -3032,6 +3095,8 @@ app.post(
                 },
               }
             );
+
+            await syncCapacityAlert(session.id, tx);
 
             return newRegistration;
           }
@@ -3269,6 +3334,8 @@ app.post(
                 note: "Registration created through CSV import.",
               },
             });
+
+            await syncCapacityAlert(session.id, tx);
 
             return registration;
           });
@@ -3662,38 +3729,6 @@ app.post(
 );
 
 // ========================================
-// Manual expiry processing
-// Development / testing endpoint
-// ========================================
-app.post(
-  "/api/registrations/expire",
-  async (req, res) => {
-    try {
-      const expiredCount =
-        await expireReservations();
-
-      res.json({
-        success: true,
-        message:
-          "Expired reservations processed.",
-        expiredCount,
-      });
-    } catch (error) {
-      console.error(
-        "Expiry processing failed:",
-        error
-      );
-
-      res.status(500).json({
-        success: false,
-        message:
-          "Failed to process expired reservations.",
-      });
-    }
-  }
-);
-
-// ========================================
 // Automatic expiry check
 // Runs every minute
 // ========================================
@@ -3931,6 +3966,8 @@ app.patch(
             },
           });
 
+          await syncCapacityAlert(registration.sessionId, tx);
+
           return updated;
         }
       );
@@ -4109,6 +4146,315 @@ app.get(
 // ========================================
 // Start server
 // ========================================
+// ========================================
+// Dashboard
+// ========================================
+// Organizer dashboard metrics. Expired reservations are processed first
+// so the dashboard reflects the current lifecycle state.
+app.get(
+  "/api/dashboard",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      await expireReservations();
+
+      const now = new Date();
+      const startOfToday = new Date(now);
+      startOfToday.setHours(0, 0, 0, 0);
+      const endOfToday = new Date(startOfToday);
+      endOfToday.setDate(endOfToday.getDate() + 1);
+
+      const startOfWeek = new Date(startOfToday);
+      const day = startOfWeek.getDay();
+      const mondayOffset = day === 0 ? 6 : day - 1;
+      startOfWeek.setDate(startOfWeek.getDate() - mondayOffset);
+
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(endOfWeek.getDate() + 7);
+
+      const fourteenDaysAgo = new Date(startOfToday);
+      fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 13);
+
+      const [
+        sessionsToday,
+        checkedInToday,
+        expiredThisWeek,
+        statusGroups,
+        sessionGroups,
+        recentCheckIns,
+        sessions,
+      ] = await Promise.all([
+        prisma.session.count({
+          where: {
+            startTime: { gte: startOfToday, lt: endOfToday },
+            event: { archivedAt: null },
+          },
+        }),
+        prisma.registration.count({
+          where: {
+            checkedInAt: { gte: startOfToday, lt: endOfToday },
+            status: "CHECKED_IN",
+            session: { event: { archivedAt: null } },
+          },
+        }),
+        prisma.registrationHistory.count({
+          where: {
+            newStatus: "EXPIRED",
+            createdAt: { gte: startOfWeek, lt: endOfWeek },
+            registration: { session: { event: { archivedAt: null } } },
+          },
+        }),
+        prisma.registration.groupBy({
+          by: ["status"],
+          _count: { _all: true },
+          where: { session: { event: { archivedAt: null } } },
+        }),
+        prisma.registration.groupBy({
+          by: ["sessionId", "status"],
+          _count: { _all: true },
+          where: { session: { event: { archivedAt: null } } },
+        }),
+        prisma.registration.findMany({
+          where: {
+            status: "CHECKED_IN",
+            checkedInAt: { gte: fourteenDaysAgo, lt: endOfToday },
+            session: { event: { archivedAt: null } },
+          },
+          select: { checkedInAt: true },
+        }),
+        prisma.session.findMany({
+          where: { event: { archivedAt: null } },
+          orderBy: { startTime: "asc" },
+          select: {
+            id: true,
+            title: true,
+            startTime: true,
+            capacity: true,
+            event: { select: { id: true, name: true } },
+            _count: {
+              select: {
+                registrations: true,
+              },
+            },
+          },
+        }),
+      ]);
+
+      const occupiedCounts = await Promise.all(
+        sessions.map(async (session) => ({
+          session,
+          occupied: await prisma.registration.count({
+            where: {
+              sessionId: session.id,
+              status: { in: ["RESERVED", "CONFIRMED", "CHECKED_IN"] },
+            },
+          }),
+        }))
+      );
+
+      const atCapacitySessions = occupiedCounts
+        .filter(({ session, occupied }) => occupied >= session.capacity)
+        .map(({ session, occupied }) => ({
+          sessionId: session.id,
+          eventId: session.event.id,
+          eventName: session.event.name,
+          sessionTitle: session.title,
+          startTime: session.startTime,
+          capacity: session.capacity,
+          occupied,
+          remaining: 0,
+        }));
+
+      const statusBreakdown = statusGroups.reduce((acc, item) => {
+        acc[item.status] = item._count._all;
+        return acc;
+      }, {});
+
+      const sessionMap = new Map(
+        sessions.map((session) => [session.id, session])
+      );
+      const sessionBreakdownMap = new Map();
+
+      for (const item of sessionGroups) {
+        const session = sessionMap.get(item.sessionId);
+        if (!session) continue;
+        if (!sessionBreakdownMap.has(item.sessionId)) {
+          sessionBreakdownMap.set(item.sessionId, {
+            sessionId: session.id,
+            eventId: session.event.id,
+            eventName: session.event.name,
+            sessionTitle: session.title,
+            startTime: session.startTime,
+            capacity: session.capacity,
+            statuses: {},
+          });
+        }
+        sessionBreakdownMap.get(item.sessionId).statuses[item.status] =
+          item._count._all;
+      }
+
+      const checkInsByDay = [];
+      for (let i = 0; i < 14; i++) {
+        const date = new Date(fourteenDaysAgo);
+        date.setDate(date.getDate() + i);
+        const nextDate = new Date(date);
+        nextDate.setDate(nextDate.getDate() + 1);
+        const count = recentCheckIns.filter(
+          (item) => item.checkedInAt >= date && item.checkedInAt < nextDate
+        ).length;
+        checkInsByDay.push({
+          date: date.toISOString().slice(0, 10),
+          checkedIn: count,
+        });
+      }
+
+      const activeCapacityAlerts = await prisma.alert.count({
+        where: {
+          type: "AT_CAPACITY",
+          dismissed: false,
+          session: { event: { archivedAt: null } },
+        },
+      });
+
+      return res.json({
+        success: true,
+        generatedAt: now,
+        summary: {
+          sessionsToday,
+          checkedInToday,
+          expiredThisWeek,
+          atCapacity: atCapacitySessions.length,
+          activeCapacityAlerts,
+        },
+        statusBreakdown,
+        sessionBreakdown: Array.from(sessionBreakdownMap.values()),
+        atCapacitySessions,
+        checkInsLast14Days: checkInsByDay,
+      });
+    } catch (error) {
+      console.error("Dashboard fetch failed:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to load dashboard.",
+      });
+    }
+  }
+);
+
+// ========================================
+// Capacity alerts
+// ========================================
+app.get(
+  "/api/alerts",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      // Reconcile current full sessions before listing alerts. This also
+      // recreates an alert when a dismissed alert's session fills again.
+      const sessions = await prisma.session.findMany({
+        where: { event: { archivedAt: null } },
+        select: { id: true },
+      });
+
+      for (const session of sessions) {
+        await syncCapacityAlert(session.id);
+      }
+
+      const alerts = await prisma.alert.findMany({
+        where: {
+          type: "AT_CAPACITY",
+          session: { event: { archivedAt: null } },
+        },
+        orderBy: { createdAt: "desc" },
+        include: {
+          session: {
+            select: {
+              id: true,
+              title: true,
+              startTime: true,
+              capacity: true,
+              event: {
+                select: { id: true, name: true },
+              },
+            },
+          },
+        },
+      });
+
+      const activeCount = alerts.filter((alert) => !alert.dismissed).length;
+
+      return res.json({
+        success: true,
+        count: activeCount,
+        alerts,
+      });
+    } catch (error) {
+      console.error("Alert fetch failed:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch alerts.",
+      });
+    }
+  }
+);
+
+app.patch(
+  "/api/alerts/:alertId/dismiss",
+  authenticateToken,
+  requireRole("ORGANIZER"),
+  async (req, res) => {
+    try {
+      const { alertId } = req.params;
+      if (!alertId || !alertId.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Valid alert ID is required.",
+        });
+      }
+
+      const alert = await prisma.alert.findUnique({
+        where: { id: alertId.trim() },
+      });
+
+      if (!alert) {
+        return res.status(404).json({
+          success: false,
+          message: "Alert not found.",
+        });
+      }
+
+      if (alert.dismissed) {
+        return res.status(409).json({
+          success: false,
+          message: "Alert is already dismissed.",
+        });
+      }
+
+      const updated = await prisma.alert.update({
+        where: { id: alert.id },
+        data: {
+          dismissed: true,
+          dismissedAt: new Date(),
+        },
+      });
+
+      return res.json({
+        success: true,
+        message: "Alert dismissed successfully.",
+        alert: updated,
+      });
+    } catch (error) {
+      console.error("Alert dismissal failed:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to dismiss alert.",
+      });
+    }
+  }
+);
+
 app.listen(PORT, () => {
   console.log(
     `Server running at http://localhost:${PORT}`

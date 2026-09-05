@@ -1,52 +1,84 @@
-# Submission
+# Event Registration — Submission
 
-Fill this in and commit it. This is the first file we open.
+## Project
+
+Event Registration take-home assignment for Busy Infotech.
 
 ## Links
 
-- **GitHub repository:** <public repo URL>
-- **Live application:** <deployed URL>
+**GitHub repository:** https://github.com/SatishMeshram/takehome-12-event-registration
+
+**Live application:** TODO — add deployed URL after deployment.
 
 ## Notes for the reviewer
 
-<Anything we should know before opening the link â€” e.g. your host sleeps when idle and the first
-request can take up to a minute.>
+The application is a React + Express + MySQL event registration system.
+
+The backend enforces authentication, role-based authorization, registration lifecycle rules, capacity protection, staff assignment permissions, and immutable registration history.
 
 ## Demo credentials
 
 | Role | Email | Password |
 |------|-------|----------|
-| <role 1> | | |
-| <role 2> | | |
+| Organizer | organizer@test.com | Organizer@123 |
+| Check-in Staff | staff@test.com | Staff@12345 |
 
-## Stack
+## Implemented Features
 
-| Layer | What you used | Why |
-|-------|---------------|-----|
-| Frontend | | |
-| Backend | | |
-| Database | | |
-| Hosting | | |
+- Organizer and check-in staff authentication.
+- JWT authentication and server-side RBAC.
+- Public registration restricted to check-in staff.
+- Event create, edit, archive, and restore.
+- Event venue support.
+- Session create, edit, and delete.
+- Registration lifecycle: RESERVED, CONFIRMED, CHECKED_IN, CANCELLED, EXPIRED.
+- Automatic reservation expiry.
+- Capacity protection and overselling prevention.
+- Many-to-many staff/session assignment.
+- Authorized staff check-in.
+- Registration search, filters, sorting, and pagination.
+- Immutable registration history.
+- CSV registration import with per-row results.
+- CSV check-in export.
+- Organizer dashboard.
+- Capacity alerts with dismissal and re-alert behavior.
 
-## Goal checklist
+## Validation
 
-Mark each honestly. Partial is fine â€” say what is partial.
+The application was tested locally through REST API testing, frontend testing, database inspection, and production frontend build validation.
 
-| # | Goal | Status | Notes |
-|---|------|--------|-------|
-| 1 | | Done / Partial / Not done | |
-| 2 | | | |
-| 3 | | | |
-| 4 | | | |
-| 5 | | | |
-| 6 | | | |
-| 7 | | | |
-| 8 | | | |
-| 9 | | | |
-| 10 | | | |
+Validated workflows include authentication, authorization, event/session management, registration lifecycle, capacity enforcement, automatic expiry, staff assignment, authorized check-in, registration search/filtering/pagination, CSV import/export, dashboard metrics, registration history, and capacity alert recreation.
 
-## How much time did you actually spend?
+## Technology Stack
 
-## What would you do next, with another 12 hours?
+- React
+- Vite
+- JavaScript
+- CSS
+- Node.js
+- Express
+- JWT
+- bcrypt
+- Multer
+- Prisma ORM
+- MySQL
 
-## What are you least happy with in this codebase, and why?
+## Documentation
+
+- docs/architecture.md
+- docs/schema.md
+- docs/plan.md
+- docs/decisions.md
+- docs/ai-prompts.md
+
+## Final Checklist
+
+- GitHub repository pushed and publicly accessible.
+- Frontend deployment completed.
+- Backend deployment completed.
+- Production database configured.
+- Production authentication tested.
+- Organizer workflow tested.
+- Check-in staff workflow tested.
+- No application secrets committed to source control.
+- Final repository documentation completed.

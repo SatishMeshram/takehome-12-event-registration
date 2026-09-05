@@ -23,7 +23,6 @@ enum AlertType {
   AT_CAPACITY
 }
 
-
 model User {
   id        String   @id @default(cuid())
   name      String
@@ -33,14 +32,15 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  staffAssignments    StaffAssignment[]
-  historyEntries      RegistrationHistory[]
+  staffAssignments StaffAssignment[]
+  historyEntries   RegistrationHistory[]
 }
 
 model Event {
   id          String   @id @default(cuid())
   name        String
   description String?
+  venue       String?
   startDate   DateTime?
   endDate     DateTime?
   archivedAt  DateTime?
@@ -61,10 +61,10 @@ model Session {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  event          Event              @relation(fields: [eventId], references: [id])
-  registrations  Registration[]
+  event            Event               @relation(fields: [eventId], references: [id])
+  registrations    Registration[]
   staffAssignments StaffAssignment[]
-  alerts         Alert[]
+  alerts           Alert[]
 
   @@index([eventId])
   @@index([startTime])
@@ -94,7 +94,6 @@ model Registration {
   @@index([reservedAt])
 }
 
-
 model StaffAssignment {
   id        String   @id @default(cuid())
   sessionId String
@@ -105,10 +104,8 @@ model StaffAssignment {
   user    User    @relation(fields: [userId], references: [id])
 
   @@unique([sessionId, userId])
-
   @@index([userId])
 }
-
 
 model RegistrationHistory {
   id             String   @id @default(cuid())
@@ -128,7 +125,6 @@ model RegistrationHistory {
   @@index([createdAt])
 }
 
-
 model Alert {
   id          String    @id @default(cuid())
   sessionId   String
@@ -139,7 +135,4 @@ model Alert {
   dismissedAt DateTime?
 
   session Session @relation(fields: [sessionId], references: [id])
-
-  @@index([sessionId])
-  @@index([dismissed])
 }
